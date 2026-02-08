@@ -1,8 +1,7 @@
-"""Model loading with VRAM-aware quantization.
+"""Model loading with 8-bit quantization.
 
-Loads Llama-3.1-8B-Instruct with automatic quantization decisions:
-  - VRAM < 20 GB (T4): 8-bit quantization via bitsandbytes
-  - VRAM >= 20 GB (A10, A100): fp16, no quantization (cleaner activations)
+Loads Llama-3.1-8B-Instruct:
+  - CUDA: 8-bit quantization via bitsandbytes (saves ~8 GB VRAM)
   - No CUDA (MPS/CPU): fp32
 """
 
@@ -36,7 +35,7 @@ def load_model(
     vram_gb = get_gpu_vram_gb()
 
     if quantize is None:
-        quantize = should_quantize(vram_gb)
+        quantize = should_quantize()
 
     if quantize and device == "cuda":
         quantization_config = BitsAndBytesConfig(

@@ -6,10 +6,12 @@ Matches the paper's methodology (v2b):
   - Leading BOS token stripped after tokenization (paper's v[:, 1:])
   - max_length=8192 (paper's 2**13)
   - Mean pooling over sequence length, respecting attention mask
+  - Layer truncation: only forward through layers 0..layer_idx (paper's HookedModel)
+  - Dynamic batching: sort by sequence length to minimize padding (paper's get_batches)
 """
 
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 import torch
@@ -21,6 +23,8 @@ from .data import Example
 
 def mean_pool(activations: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     """Mean pool activations over sequence length, respecting padding.
+
+    Operates on whatever device the tensors are on (GPU or CPU).
 
     Args:
         activations:    (batch, seq_len, hidden_dim)
@@ -37,6 +41,49 @@ def mean_pool(activations: torch.Tensor, attention_mask: torch.Tensor) -> torch.
     return summed / counts                                       # (batch, hidden_dim)
 
 
+def _format_and_measure_lengths(
+    tokenizer: AutoTokenizer,
+    examples: List[Example],
+) -> Tuple[List[str], List[int]]:
+    """Apply chat template and measure approximate token lengths.
+
+    Returns:
+        formatted_texts: list of formatted strings
+        lengths: list of token counts (from fast tokenizer, no padding)
+    """
+    formatted_texts = [
+        tokenizer.apply_chat_template(
+            ex.messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        for ex in examples
+    ]
+
+    # tokenize without padding to get true lengths
+    encoded = tokenizer(formatted_texts, padding=False, truncation=False)
+    lengths = [len(ids) for ids in encoded["input_ids"]]
+
+    return formatted_texts, lengths
+
+
+def _make_length_sorted_batches(
+    lengths: List[int],
+    batch_size: int,
+) -> List[List[int]]:
+    """Sort examples by token length, group into batches of similar length.
+
+    Returns list of batches, where each batch is a list of original indices.
+    """
+    sorted_indices = sorted(range(len(lengths)), key=lambda i: lengths[i])
+
+    batches = []
+    for start in range(0, len(sorted_indices), batch_size):
+        batches.append(sorted_indices[start : start + batch_size])
+
+    return batches
+
+
 def extract_activations_batched(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -51,68 +98,80 @@ def extract_activations_batched(
     Hooks into model.model.layers[layer_idx].input_layernorm — this captures
     the residual stream entering the layer (what layers 0..N-1 have built up).
 
+    Optimizations matching the paper (models-under-pressure):
+      - Truncates model to layers 0..layer_idx to skip unnecessary computation
+      - Sorts examples by length to minimize padding within each batch
+      - Pools on GPU, moves only the small (hidden_dim,) result to CPU
+      - Clears GPU cache after every batch
+
     Returns:
-        pooled: (n_examples, hidden_dim) numpy array
+        pooled: (n_examples, hidden_dim) numpy array, in original example order
     """
     device = next(model.parameters()).device
-    all_pooled = []
 
-    hook_target = model.model.layers[layer_idx].input_layernorm
+    # pre-tokenize to get lengths for dynamic batching
+    formatted_texts, lengths = _format_and_measure_lengths(tokenizer, examples)
+    batches = _make_length_sorted_batches(lengths, batch_size)
 
-    batches = range(0, len(examples), batch_size)
-    if show_progress:
-        batches = tqdm(batches, desc=f"Extracting layer {layer_idx} (input_layernorm)")
+    # allocate output array — fill in original order via index mapping
+    hidden_dim   = model.config.hidden_size
+    all_pooled   = np.empty((len(examples), hidden_dim), dtype=np.float32)
+    hook_target  = model.model.layers[layer_idx].input_layernorm
 
-    for i in batches:
-        batch_examples = examples[i : i + batch_size]
-        captured = []
+    # truncate model to avoid computing layers beyond our hook
+    original_layers = model.model.layers
+    model.model.layers = original_layers[: layer_idx + 1]
 
-        def hook_fn(module, input, output):
-            captured.append(output.detach().cpu())
+    try:
+        iterator = tqdm(batches, desc=f"Layer {layer_idx}") if show_progress else batches
 
-        handle = hook_target.register_forward_hook(hook_fn)
+        for batch_indices in iterator:
+            batch_texts = [formatted_texts[i] for i in batch_indices]
+            captured    = []
 
-        try:
-            # apply chat template to each example's messages
-            formatted_texts = [
-                tokenizer.apply_chat_template(
-                    ex.messages,
-                    tokenize=False,
-                    add_generation_prompt=False,
-                )
-                for ex in batch_examples
-            ]
+            def hook_fn(module, input, output):
+                captured.append(output.detach())  # stays on GPU
 
-            inputs = tokenizer(
-                formatted_texts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=max_length,
-            ).to(device)
+            handle = hook_target.register_forward_hook(hook_fn)
 
-            # strip leading BOS token (paper does v[:, 1:])
-            inputs["input_ids"]      = inputs["input_ids"][:, 1:]
-            inputs["attention_mask"] = inputs["attention_mask"][:, 1:]
+            try:
+                inputs = tokenizer(
+                    batch_texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=max_length,
+                ).to(device)
 
-            with torch.no_grad():
-                _ = model(**inputs)
+                # strip leading BOS token (paper does v[:, 1:])
+                inputs["input_ids"]      = inputs["input_ids"][:, 1:]
+                inputs["attention_mask"] = inputs["attention_mask"][:, 1:]
 
-            # captured[0]: (batch, seq_len, hidden_dim) from layernorm output
-            activations    = captured[0]
-            attention_mask = inputs["attention_mask"].cpu()
+                with torch.no_grad():
+                    model(**inputs)
 
-            pooled = mean_pool(activations, attention_mask)
-            all_pooled.append(pooled.numpy())
+                # pool on GPU — captured[0] is (batch, seq_len, hidden_dim) on device
+                attention_mask = inputs["attention_mask"]
+                pooled = mean_pool(captured[0], attention_mask)  # (batch, hidden_dim)
 
-        finally:
-            handle.remove()
+                # move only the small pooled result to CPU
+                pooled_np = pooled.cpu().float().numpy()
 
-        # periodic cache clear to avoid VRAM buildup
-        if torch.cuda.is_available() and i % (batch_size * 10) == 0:
-            torch.cuda.empty_cache()
+                for j, orig_idx in enumerate(batch_indices):
+                    all_pooled[orig_idx] = pooled_np[j]
 
-    return np.concatenate(all_pooled, axis=0)
+            finally:
+                handle.remove()
+                # free intermediates
+                del captured, inputs
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+    finally:
+        # restore full model layers
+        model.model.layers = original_layers
+
+    return all_pooled
 
 
 def get_activations_cached(

@@ -104,14 +104,14 @@ def get_gpu_vram_gb() -> float:
     return props.total_memory / (1024 ** 3)
 
 
-def should_quantize(vram_gb: float = None) -> bool:
+def should_quantize() -> bool:
     """Decide whether to use 8-bit quantization.
 
-    Quantize if VRAM < 20 GB (T4 = 16 GB needs it, A10 = 24 GB does not).
+    2026-02-08: Always quantize to 8-bit. Saves ~8 GB VRAM with negligible
+    impact on probe quality (we compare within the same quantization setting).
+    Revisit if we need exact fp16 parity with the paper's results.
     """
-    if vram_gb is None:
-        vram_gb = get_gpu_vram_gb()
-    return 0 < vram_gb < 20
+    return True
 
 
 def recommend_batch_size(vram_gb: float = None) -> int:
