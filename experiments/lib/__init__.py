@@ -1,0 +1,6 @@
+# experiments/lib — shared utilities for bluedot-project notebooks
+#
+# Usage from any notebook in experiments/notebooks/:
+#   import sys; sys.path.insert(0, str(Path("..").resolve()))
+#   from lib.env import ENV, BASE_DIR, DEVICE, CACHE_DIR, ...
+#   from lib.data import load_dataset, ensure_datasets, ...
