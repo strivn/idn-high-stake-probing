@@ -101,7 +101,7 @@ def get_gpu_vram_gb() -> float:
     if not torch.cuda.is_available():
         return 0.0
     props = torch.cuda.get_device_properties(0)
-    return props.total_mem / (1024 ** 3)
+    return props.total_memory / (1024 ** 3)
 
 
 def should_quantize(vram_gb: float = None) -> bool:
@@ -175,7 +175,7 @@ def setup_hf_auth(token: str = None):
     else:
         print("No HF_TOKEN found. Pass token= directly, set in .env, or use Colab Secrets.")
 
-    return hf_token
+    # return hf_token
 
 
 # ---------------------------------------------------------------------------
