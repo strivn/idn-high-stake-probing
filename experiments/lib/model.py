@@ -1,8 +1,10 @@
-"""Model loading with 8-bit quantization.
+"""Model loading with VRAM-aware quantization.
 
-Loads Llama-3.1-8B-Instruct:
-  - CUDA: 8-bit quantization via bitsandbytes (saves ~8 GB VRAM)
-  - No CUDA (MPS/CPU): fp32
+Supports multiple model families:
+  - Llama 3.1/3.3 (layers via model.model.layers)
+  - Gemma 3 (layers via model.language_model.layers)
+
+Quantization: 8-bit via bitsandbytes on CUDA, fp32 on CPU/MPS.
 """
 
 import torch
@@ -12,6 +14,52 @@ from .env import get_device, get_gpu_vram_gb, should_quantize
 
 
 DEFAULT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+
+# Registry: HF model name -> (short_name for cache, param_size for batch decisions)
+# short_name is used in cache file prefixes to avoid collisions
+MODEL_REGISTRY = {
+    "meta-llama/Llama-3.1-8B-Instruct":  {"short_name": "llama31_8b",  "params_b": 8},
+    "meta-llama/Llama-3.3-70B-Instruct": {"short_name": "llama33_70b", "params_b": 70},
+    "google/gemma-3-12b-it":             {"short_name": "gemma3_12b",  "params_b": 12},
+    "google/gemma-3-27b-it":             {"short_name": "gemma3_27b",  "params_b": 27},
+}
+
+
+def get_model_short_name(model_name: str) -> str:
+    """Return a short, filesystem-safe name for cache prefixes."""
+    info = MODEL_REGISTRY.get(model_name)
+    if info:
+        return info["short_name"]
+    # fallback: sanitize the HF name
+    return model_name.split("/")[-1].lower().replace("-", "_")
+
+
+def get_model_layers(model):
+    """Return the nn.ModuleList of transformer layers for any supported model.
+
+    Llama:  model.model.layers
+    Gemma3: model.language_model.layers
+    """
+    model_type = model.config.model_type
+    if model_type in ("llama",):
+        return model.model.layers
+    if model_type in ("gemma3",):
+        return model.language_model.layers
+    raise ValueError(
+        f"Unsupported model_type '{model_type}'. "
+        f"Add layer path to get_model_layers() in lib/model.py"
+    )
+
+
+def set_model_layers(model, layers):
+    """Replace the transformer layers list (for layer truncation during extraction)."""
+    model_type = model.config.model_type
+    if model_type in ("llama",):
+        model.model.layers = layers
+    elif model_type in ("gemma3",):
+        model.language_model.layers = layers
+    else:
+        raise ValueError(f"Unsupported model_type '{model_type}'")
 
 
 def load_model(

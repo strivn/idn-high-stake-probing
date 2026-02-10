@@ -114,22 +114,27 @@ def should_quantize() -> bool:
     return True
 
 
-def recommend_batch_size(vram_gb: float = None) -> int:
-    """Suggest batch size for activation extraction based on available VRAM.
+def recommend_batch_size(vram_gb: float = None, params_b: float = 8) -> int:
+    """Suggest batch size for activation extraction based on VRAM and model size.
 
-    Conservative estimates for Llama-3.1-8B with max_length=8192:
-      < 20 GB (T4 16GB):   batch_size = 2
-      20-30 GB (A10 24GB): batch_size = 4
-      30-50 GB (A100 40GB): batch_size = 8
-      > 50 GB (A100 80GB): batch_size = 16
+    params_b: model size in billions (8 for Llama-3.1-8B, 70 for Llama-3.3-70B, etc.)
+
+    Estimates assume max_length=8192, 8-bit quantization.
+    Larger models need proportionally smaller batches.
     """
     if vram_gb is None:
         vram_gb = get_gpu_vram_gb()
-    if vram_gb < 20:
+
+    # available VRAM after model is loaded (rough: model takes ~1 GB per B params in 8-bit)
+    available = vram_gb - params_b
+
+    if available < 4:
+        return 1
+    if available < 10:
         return 2
-    if vram_gb < 30:
+    if available < 20:
         return 4
-    if vram_gb < 50:
+    if available < 40:
         return 8
     return 16
 

@@ -28,7 +28,8 @@ wheels/
 *.ipynb.bak
 
 # Data, models, and caches
-data/
+data/*
+!data/indonesian/
 *.pt
 *.pth
 *.ckpt
@@ -60,3 +61,4 @@ mentor_advice.md
 .claude
 research/archived/
 research/repositories/
+for_you_memo.md
