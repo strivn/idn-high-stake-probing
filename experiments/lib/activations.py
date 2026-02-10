@@ -15,7 +15,7 @@ from typing import List, Tuple
 
 import numpy as np
 import torch
-from tqdm.auto import tqdm
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .data import Example

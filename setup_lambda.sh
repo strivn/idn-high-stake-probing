@@ -100,7 +100,7 @@ print(f'PyTorch:  {torch.__version__}')
 print(f'CUDA:     {torch.cuda.is_available()}')
 if torch.cuda.is_available():
     props = torch.cuda.get_device_properties(0)
-    vram  = props.total_mem / (1024**3)
+    vram  = props.total_memory / (1024**3)
     print(f'GPU:      {props.name}')
     print(f'VRAM:     {vram:.1f} GB')
     print(f'Quantize: {\"yes (8-bit)\" if vram < 20 else \"no (fp16)\"}')"
