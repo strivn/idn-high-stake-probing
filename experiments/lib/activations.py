@@ -19,7 +19,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .data import Example
-from .model import get_model_layers, set_model_layers
+from .model import get_config_attr, get_model_layers, set_model_layers
 
 
 def mean_pool(activations: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -115,7 +115,7 @@ def extract_activations_batched(
     batches = _make_length_sorted_batches(lengths, batch_size)
 
     # allocate output array — fill in original order via index mapping
-    hidden_dim      = model.config.hidden_size
+    hidden_dim      = get_config_attr(model, 'hidden_size')
     all_pooled      = np.empty((len(examples), hidden_dim), dtype=np.float32)
     all_layers      = get_model_layers(model)
     hook_target     = all_layers[layer_idx].input_layernorm

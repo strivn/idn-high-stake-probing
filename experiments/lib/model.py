@@ -34,6 +34,25 @@ def get_model_short_name(model_name: str) -> str:
     return model_name.split("/")[-1].lower().replace("-", "_")
 
 
+def get_config_attr(model, attr_name: str):
+    """Get config attribute, handling both flat and nested (text_config) structures.
+
+    Args:
+        model: The model instance
+        attr_name: Attribute name (e.g., 'num_hidden_layers', 'hidden_size', 'vocab_size')
+
+    Returns:
+        The attribute value
+    """
+    config = model.config
+    if hasattr(config, 'text_config'):
+        # Multimodal models (Gemma3) nest text params in text_config
+        return getattr(config.text_config, attr_name)
+    else:
+        # Standard models (Llama) have flat config
+        return getattr(config, attr_name)
+
+
 def get_model_layers(model):
     """Return the nn.ModuleList of transformer layers for any supported model.
 
@@ -117,9 +136,11 @@ def load_model(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    n_layers   = model.config.num_hidden_layers
-    hidden_dim = model.config.hidden_size
+    # Use helper to handle both flat (Llama) and nested (Gemma3) config structures
+    n_layers   = get_config_attr(model, 'num_hidden_layers')
+    hidden_dim = get_config_attr(model, 'hidden_size')
+    vocab_size = get_config_attr(model, 'vocab_size')
 
-    print(f"  Layers: {n_layers} | Hidden dim: {hidden_dim} | Vocab: {model.config.vocab_size}")
+    print(f"  Layers: {n_layers} | Hidden dim: {hidden_dim} | Vocab: {vocab_size}")
 
     return model, tokenizer
