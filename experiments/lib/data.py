@@ -84,10 +84,12 @@ def load_jsonl(path: Path) -> List[Dict]:
 
 
 def parse_label(row: Dict) -> int:
-    if "high_stakes" in row:
-        return 1 if row["high_stakes"] else 0
+    # Use 'labels' (the paper's field, clean 50/50 split) over 'high_stakes'
+    # (boolean derived from scale_labels with different thresholding)
     if "labels" in row:
         return 1 if row["labels"] == "high-stakes" else 0
+    if "high_stakes" in row:
+        return 1 if row["high_stakes"] else 0
     raise ValueError(f"Cannot find label in row: {row.keys()}")
 
 

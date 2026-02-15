@@ -1,6 +1,6 @@
 """Evaluation metrics and error analysis for probes."""
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
@@ -14,6 +14,51 @@ def tpr_at_fpr(y_true: np.ndarray, y_scores: np.ndarray, target_fpr: float = 0.0
     fpr, tpr, _ = roc_curve(y_true, y_scores)
     valid = np.where(fpr <= target_fpr)[0]
     return tpr[valid[-1]] if len(valid) > 0 else 0.0
+
+
+def bootstrap_auroc_ci(
+    y_true: np.ndarray,
+    y_scores: np.ndarray,
+    n_bootstrap: int = 1000,
+    ci: float = 0.95,
+    seed: int = 42,
+) -> Tuple[float, float, float]:
+    """Bootstrap confidence interval for AUROC.
+
+    Resamples (y_true, y_scores) with replacement, computes AUROC on each
+    resample, and returns the point estimate with percentile CI.
+
+    Args:
+        y_true:      Ground truth binary labels
+        y_scores:    Predicted probabilities
+        n_bootstrap: Number of bootstrap resamples
+        ci:          Confidence level (default 0.95 for 95% CI)
+        seed:        Random seed for reproducibility
+
+    Returns:
+        (auroc, ci_lower, ci_upper)
+    """
+    rng    = np.random.RandomState(seed)
+    n      = len(y_true)
+    aurocs = np.empty(n_bootstrap)
+    alpha  = (1 - ci) / 2  # e.g. 0.025 for 95% CI
+
+    for i in range(n_bootstrap):
+        idx = rng.randint(0, n, size=n)
+        y_b = y_true[idx]
+        s_b = y_scores[idx]
+        # skip degenerate resamples (all one class)
+        if y_b.sum() == 0 or y_b.sum() == n:
+            aurocs[i] = np.nan
+        else:
+            aurocs[i] = roc_auc_score(y_b, s_b)
+
+    aurocs   = aurocs[~np.isnan(aurocs)]
+    ci_lower = np.percentile(aurocs, 100 * alpha)
+    ci_upper = np.percentile(aurocs, 100 * (1 - alpha))
+    point    = roc_auc_score(y_true, y_scores)
+
+    return point, ci_lower, ci_upper
 
 
 def evaluate_probe(

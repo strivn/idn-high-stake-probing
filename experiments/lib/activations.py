@@ -8,10 +8,15 @@ Matches the paper's methodology (v2b):
   - Mean pooling over sequence length, respecting attention mask
   - Layer truncation: only forward through layers 0..layer_idx (paper's HookedModel)
   - Dynamic batching: sort by sequence length to minimize padding (paper's get_batches)
+
+Also supports per-token SAE encoding via extract_sae_features_batched():
+  - Encodes each token's activation through an SAE inside the forward hook
+  - Max-pools SAE feature activations across tokens per example
+  - Avoids storing massive per-token activations (only stores aggregated features)
 """
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -207,3 +212,190 @@ def get_activations_cached(
     print(f"Saved to cache: {cache_path.name}")
 
     return activations
+
+
+# ---------------------------------------------------------------------------
+# Per-token SAE feature extraction
+# ---------------------------------------------------------------------------
+
+def _sae_encode_tokens(
+    activations: torch.Tensor,
+    attention_mask: torch.Tensor,
+    sae,
+    token_batch_size: int = 512,
+) -> torch.Tensor:
+    """Encode per-token activations through SAE and max-pool over sequence.
+
+    Processes tokens in sub-batches to avoid OOM on long sequences.
+
+    Args:
+        activations:      (batch, seq_len, hidden_dim) on GPU
+        attention_mask:    (batch, seq_len)
+        sae:              SAE object with .encode() method
+        token_batch_size: max tokens to encode at once through SAE
+
+    Returns:
+        features: (batch, n_sae_features) max-pooled SAE features
+    """
+    batch_size, seq_len, hidden_dim = activations.shape
+    n_features = sae.cfg.d_sae
+
+    # max-pool accumulator, init to zero (inactive features stay 0)
+    max_features = torch.zeros(batch_size, n_features,
+                               device=activations.device, dtype=torch.float32)
+
+    # flatten to (batch * seq_len, hidden_dim) for SAE encoding
+    flat_acts = activations.reshape(-1, hidden_dim)
+    flat_mask = attention_mask.reshape(-1).bool()
+
+    # only encode non-padding tokens
+    valid_indices = torch.where(flat_mask)[0]
+    n_valid       = valid_indices.shape[0]
+
+    for start in range(0, n_valid, token_batch_size):
+        end     = min(start + token_batch_size, n_valid)
+        idx     = valid_indices[start:end]
+        tok_act = flat_acts[idx]                        # (chunk, hidden_dim)
+
+        with torch.no_grad():
+            tok_feat = sae.encode(tok_act)              # (chunk, n_features)
+
+        # map back to (batch, feature) via max
+        batch_idx = idx // seq_len                      # which example each token belongs to
+        # scatter_reduce with max: update max_features[batch_idx[i]] = max(current, tok_feat[i])
+        max_features.scatter_reduce_(
+            0,
+            batch_idx.unsqueeze(1).expand_as(tok_feat),
+            tok_feat,
+            reduce="amax",
+            include_self=True,
+        )
+
+    return max_features
+
+
+def extract_sae_features_batched(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    examples: List[Example],
+    layer_idx: int,
+    sae,
+    batch_size: int = 2,
+    max_length: int = 2**13,
+    show_progress: bool = True,
+) -> np.ndarray:
+    """Extract per-token SAE features, max-pooled over sequence.
+
+    Same forward pass as extract_activations_batched, but instead of mean-pooling
+    raw activations, encodes each token through the SAE and max-pools the sparse
+    features. This gives proper SAE sparsity (L0 ~ 50) instead of the ~2 you get
+    from encoding mean-pooled activations.
+
+    Args:
+        model:      Loaded LLM
+        tokenizer:  Corresponding tokenizer
+        examples:   List of Example objects
+        layer_idx:  Which layer to hook
+        sae:        SAE object (from sae_lens.SAE.from_pretrained)
+        batch_size: Examples per forward pass (use 1-2, SAE encoding is memory-heavy)
+        max_length: Max sequence length
+        show_progress: Show tqdm bar
+
+    Returns:
+        features: (n_examples, n_sae_features) numpy array, max-pooled per example
+    """
+    device = next(model.parameters()).device
+
+    formatted_texts, lengths = _format_and_measure_lengths(tokenizer, examples)
+    batches = _make_length_sorted_batches(lengths, batch_size)
+
+    n_features      = sae.cfg.d_sae
+    all_features    = np.empty((len(examples), n_features), dtype=np.float32)
+    all_layers      = get_model_layers(model)
+    hook_target     = all_layers[layer_idx].input_layernorm
+
+    original_layers = all_layers
+    set_model_layers(model, original_layers[: layer_idx + 1])
+
+    try:
+        desc     = f"SAE L{layer_idx}"
+        iterator = tqdm(batches, desc=desc) if show_progress else batches
+
+        for batch_indices in iterator:
+            batch_texts = [formatted_texts[i] for i in batch_indices]
+            captured    = []
+
+            def hook_fn(module, input, output):
+                captured.append(output.detach())
+
+            handle = hook_target.register_forward_hook(hook_fn)
+
+            try:
+                inputs = tokenizer(
+                    batch_texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=max_length,
+                ).to(device)
+
+                inputs["input_ids"]      = inputs["input_ids"][:, 1:]
+                inputs["attention_mask"] = inputs["attention_mask"][:, 1:]
+
+                with torch.no_grad():
+                    model(**inputs)
+
+                # captured[0]: (batch, seq_len, hidden_dim) on GPU
+                # encode through SAE per-token, max-pool over sequence
+                features = _sae_encode_tokens(
+                    captured[0], inputs["attention_mask"], sae
+                )
+                features_np = features.cpu().float().numpy()
+
+                for j, orig_idx in enumerate(batch_indices):
+                    all_features[orig_idx] = features_np[j]
+
+            finally:
+                handle.remove()
+                del captured, inputs
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+    finally:
+        set_model_layers(model, original_layers)
+
+    return all_features
+
+
+def get_sae_features_cached(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    examples: List[Example],
+    layer_idx: int,
+    sae,
+    cache_name: str,
+    cache_dir: Path,
+    cache_prefix: str = "v2b",
+    batch_size: int = 2,
+    force_recompute: bool = False,
+) -> np.ndarray:
+    """Extract per-token SAE features with disk caching.
+
+    Cache files: {cache_prefix}_sae_{cache_name}_layer{layer_idx}.npy
+    """
+    cache_filename = f"{cache_prefix}_sae_{cache_name}_layer{layer_idx}.npy"
+    cache_path     = cache_dir / cache_filename
+
+    if cache_path.exists() and not force_recompute:
+        print(f"Loading SAE features from cache: {cache_path.name}")
+        return np.load(cache_path)
+
+    print(f"Extracting SAE features for {len(examples)} examples (batch_size={batch_size})...")
+    features = extract_sae_features_batched(
+        model, tokenizer, examples, layer_idx, sae, batch_size
+    )
+
+    np.save(cache_path, features)
+    print(f"Saved SAE features to cache: {cache_path.name}")
+
+    return features

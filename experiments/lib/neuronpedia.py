@@ -1,12 +1,16 @@
 """Neuronpedia API integration for fetching feature explanations.
 
 Supports Llama Scope, Gemma Scope 2, and Goodfire SAE feature lookups with caching.
+
+Uses the per-feature API: /api/feature/{modelId}/{saeId}/{index}
+The bulk export endpoint (/api/explanation/export) was deprecated in late 2025.
 """
 
 import json
+import time
 import requests
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from .neuronpedia_config import (
     get_neuronpedia_ids,
@@ -15,85 +19,147 @@ from .neuronpedia_config import (
     OUR_MODELS,
 )
 
+FEATURE_API = "https://www.neuronpedia.org/api/feature"
+
+
+def _extract_description(data: Dict[str, Any]) -> str:
+    """Extract description from a Neuronpedia feature API response.
+
+    Checks multiple known locations since the API nests explanations differently.
+    """
+    if "description" in data and data["description"]:
+        return data["description"]
+
+    if "explanations" in data and data["explanations"]:
+        first = data["explanations"][0]
+        if isinstance(first, dict) and "description" in first:
+            return first["description"]
+
+    # Fallback: summarize from top positive tokens
+    pos_str = data.get("pos_str", [])
+    if pos_str:
+        tokens = [t.strip() for t in pos_str[:5] if t.strip()]
+        if tokens:
+            return f"[auto: top tokens] {', '.join(tokens)}"
+
+    return ""
+
+
+def _fetch_single(model_id: str, sae_id: str, feature_id: int, timeout: float = 10) -> str:
+    """Fetch explanation for one feature from the per-feature API."""
+    url = f"{FEATURE_API}/{model_id}/{sae_id}/{feature_id}"
+    try:
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        return _extract_description(resp.json())
+    except Exception:
+        return ""
+
+
+class LazyExplanations(dict):
+    """Dict-like object that fetches feature explanations on demand.
+
+    Keeps the same interface as a plain dict so notebook code like
+    `explanations.get(feat_id, "...")` and `explanations[feat_id]` just works.
+    Fetched results are cached to disk incrementally.
+    """
+
+    def __init__(self, model_id: str, sae_id: str, cache_file: Path, delay: float = 0.05):
+        super().__init__()
+        self._model_id   = model_id
+        self._sae_id     = sae_id
+        self._cache_file = cache_file
+        self._delay      = delay
+        self._fetched     = set()  # track which IDs we already tried (avoid re-fetching empties)
+
+        # Load existing cache from disk
+        if cache_file.exists():
+            try:
+                with open(cache_file, "r") as f:
+                    cached = json.load(f)
+                for k, v in cached.items():
+                    super().__setitem__(int(k), v)
+                    self._fetched.add(int(k))
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+    def _fetch_and_cache(self, feature_id: int) -> str:
+        desc = _fetch_single(self._model_id, self._sae_id, feature_id)
+        super().__setitem__(feature_id, desc)
+        self._fetched.add(feature_id)
+        self._save()
+        if self._delay > 0:
+            time.sleep(self._delay)
+        return desc
+
+    def _save(self):
+        with open(self._cache_file, "w") as f:
+            json.dump({str(k): v for k, v in self.items()}, f, indent=2)
+
+    def __missing__(self, feature_id: int) -> str:
+        return self._fetch_and_cache(feature_id)
+
+    def get(self, feature_id, default=None):
+        if feature_id in self or feature_id in self._fetched:
+            return super().get(feature_id, default)
+        desc = self._fetch_and_cache(feature_id)
+        return desc if desc else default
+
+    def prefetch(self, feature_ids: List[int]):
+        """Batch-fetch a list of feature IDs (skipping already cached)."""
+        to_fetch = [fid for fid in feature_ids if fid not in self._fetched]
+        if not to_fetch:
+            return
+        print(f"Fetching {len(to_fetch)} explanations from Neuronpedia ({len(feature_ids) - len(to_fetch)} cached)...")
+        for i, fid in enumerate(to_fetch):
+            _fetch_single_result = _fetch_single(self._model_id, self._sae_id, fid)
+            super().__setitem__(fid, _fetch_single_result)
+            self._fetched.add(fid)
+            if (i + 1) % 20 == 0:
+                print(f"  ... {i+1}/{len(to_fetch)}")
+            if self._delay > 0 and i < len(to_fetch) - 1:
+                time.sleep(self._delay)
+        self._save()
+        print(f"Done. {len(self)} total explanations cached.")
+
 
 def fetch_explanations(
     model_id: str,
     sae_id: str,
     cache_dir: Optional[Path] = None,
-    force_refresh: bool = False
-) -> Dict[int, str]:
-    """
-    Fetch feature explanations from Neuronpedia API with caching.
+    force_refresh: bool = False,
+) -> LazyExplanations:
+    """Return a lazy dict that fetches feature explanations on demand.
+
+    Drop-in replacement for the old bulk-export fetch. Same signature, same
+    usage (explanations[feat_id], explanations.get(feat_id, "...")), but
+    fetches per-feature from /api/feature/ since the bulk export was deprecated.
 
     Args:
-        model_id: Neuronpedia model ID (e.g., "llama3.1-8b")
-        sae_id: Neuronpedia SAE ID (e.g., "12-llamascoperes-8x")
-        cache_dir: Directory for caching. If None, uses current dir/.cache/
-        force_refresh: Force re-download even if cached
+        model_id:      Neuronpedia model ID (e.g., "llama3.1-8b")
+        sae_id:        Neuronpedia SAE ID (e.g., "12-llamascope-res-32k")
+        cache_dir:     Directory for caching (default: cwd/.cache/)
+        force_refresh: Delete cache and start fresh
 
     Returns:
-        Dictionary mapping feature_id (int) -> explanation (str)
-
-    Example:
-        >>> explanations = fetch_explanations("llama3.1-8b", "12-llamascoperes-8x")
-        >>> print(explanations[1234])
-        'Emergency and urgent situations'
+        LazyExplanations dict — access any feature_id and it auto-fetches.
     """
-    # Setup cache
     if cache_dir is None:
         cache_dir = Path.cwd() / ".cache"
     cache_dir.mkdir(exist_ok=True)
 
     cache_file = cache_dir / f"{model_id}_{sae_id}_explanations.json"
 
-    # Try cache first
-    if not force_refresh and cache_file.exists():
-        try:
-            with open(cache_file, 'r') as f:
-                cached = json.load(f)
-                # Convert string keys back to int
-                explanations = {int(k): v for k, v in cached.items()}
-                print(f"📚 Loaded {len(explanations)} explanations from cache: {cache_file.name}")
-                return explanations
-        except (json.JSONDecodeError, ValueError) as e:
-            print(f"⚠️ Cache corrupted ({e}), re-downloading...")
+    if force_refresh and cache_file.exists():
+        cache_file.unlink()
 
-    # Fetch from API
-    url = f"https://www.neuronpedia.org/api/explanation/export"
-    params = {"modelId": model_id, "saeId": sae_id}
-
-    print(f"🌐 Fetching explanations from Neuronpedia API...")
-    print(f"   URL: {url}?modelId={model_id}&saeId={sae_id}")
-
-    try:
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-
-        data = response.json()
-        explanations = {}
-
-        for entry in data:
-            feature_idx = int(entry.get('index', -1))
-            if feature_idx >= 0:
-                desc = entry.get('description', 'No description available')
-                explanations[feature_idx] = desc
-
-        print(f"✅ Downloaded {len(explanations)} feature explanations")
-
-        # Cache results
-        with open(cache_file, 'w') as f:
-            cache_data = {str(k): v for k, v in explanations.items()}
-            json.dump(cache_data, f, indent=2)
-        print(f"💾 Cached to {cache_file.name}")
-
-        return explanations
-
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Failed to fetch explanations: {e}")
-        return {}
-    except (json.JSONDecodeError, KeyError) as e:
-        print(f"❌ Failed to parse response: {e}")
-        return {}
+    explanations = LazyExplanations(model_id, sae_id, cache_file)
+    n_cached = len(explanations)
+    if n_cached:
+        print(f"Loaded {n_cached} cached explanations from {cache_file.name}")
+    else:
+        print(f"Explanations will be fetched on demand from Neuronpedia API")
+    return explanations
 
 
 def get_explanation(
@@ -227,18 +293,21 @@ def batch_lookup(
     model_id: str,
     sae_id: str
 ) -> Dict[int, str]:
-    """
-    Lookup multiple features at once.
+    """Lookup multiple features, triggering lazy fetches if needed.
 
     Args:
-        feature_ids: List of feature indices
-        explanations: Dictionary of explanations
-        model_id: Model ID
-        sae_id: SAE ID
+        feature_ids:  List of feature indices
+        explanations: LazyExplanations dict (or regular dict)
+        model_id:     Model ID for fallback URLs
+        sae_id:       SAE ID for fallback URLs
 
     Returns:
-        Dictionary mapping feature_id -> explanation (with fallbacks)
+        Dict mapping feature_id -> explanation (with URL fallback if missing)
     """
+    # Prefetch if the dict supports it (LazyExplanations)
+    if hasattr(explanations, "prefetch"):
+        explanations.prefetch(feature_ids)
+
     return {
         fid: get_explanation(fid, explanations, model_id, sae_id)
         for fid in feature_ids

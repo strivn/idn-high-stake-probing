@@ -17,11 +17,11 @@ from sklearn.preprocessing import StandardScaler
 class LinearProbe:
     """Linear probe with standardization."""
 
-    def __init__(self, C: float = 1e-3):
+    def __init__(self, C: float = 1e-3, random_state: int = 42):
         self.scaler     = StandardScaler()
         self.classifier = LogisticRegression(
             C=C,
-            random_state=42,
+            random_state=random_state,
             max_iter=1000,
             solver="lbfgs",
             fit_intercept=False,
