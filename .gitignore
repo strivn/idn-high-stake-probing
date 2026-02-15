@@ -36,7 +36,9 @@ data/*
 *.h5
 *.safetensors
 *.npy
-experiments/cache/
+experiments/cache/*
+!experiments/cache/outputs/
+!experiments/cache/figures/
 
 # IDE
 .vscode/

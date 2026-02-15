@@ -1,0 +1,36 @@
+{
+  "version": "v2b",
+  "changes": [
+    "chat_template",
+    "input_layernorm",
+    "strip_bos",
+    "fit_intercept_false",
+    "max_length_8192"
+  ],
+  "model_name": "meta-llama/Llama-3.1-8B-Instruct",
+  "layer_idx": 16,
+  "results": {
+    "synthetic_test": {
+      "auroc": 0.9953743335586093,
+      "accuracy": 0.972,
+      "tpr_at_1fpr": 0.910880829015544,
+      "tpr_at_5fpr": 0.9886010362694301
+    },
+    "anthropic": {
+      "auroc": 0.8480173975231619,
+      "accuracy": 0.7570375335120644,
+      "tpr_at_1fpr": 0.18096514745308312,
+      "tpr_at_5fpr": 0.3947721179624665
+    },
+    "toolace": {
+      "auroc": 0.8099696337488583,
+      "accuracy": 0.6757493188010899,
+      "tpr_at_1fpr": 0.23160762942779292,
+      "tpr_at_5fpr": 0.3896457765667575
+    }
+  },
+  "train_size": 8000,
+  "hidden_dim": 4096,
+  "vram_gb": 22.0679931640625,
+  "env": "remote"
+}
