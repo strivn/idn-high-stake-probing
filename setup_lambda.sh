@@ -61,6 +61,12 @@ fi
 # ---------------------------------------------------------------
 # 3. Install all dependencies (creates .venv automatically)
 # ---------------------------------------------------------------
+# Avoid failed hardlink attempts on cross-filesystem setups (NFS home dir)
+export UV_LINK_MODE=copy
+
+echo "Pre-installing Python 3.11 interpreter..."
+uv python install 3.11
+
 echo "Running uv sync..."
 uv sync
 
@@ -104,6 +110,20 @@ if torch.cuda.is_available():
     print(f'GPU:      {props.name}')
     print(f'VRAM:     {vram:.1f} GB')
     print(f'Quantize: {\"yes (8-bit)\" if vram < 20 else \"no (fp16)\"}')"
+
+# ---------------------------------------------------------------
+# 7. Install VS Code extensions (for VS Code Server / Remote SSH)
+# ---------------------------------------------------------------
+if command -v code &> /dev/null; then
+    echo ""
+    echo "Installing VS Code extensions..."
+    code --install-extension ms-python.python          --force
+    code --install-extension ms-toolsai.jupyter        --force
+    code --install-extension ms-toolsai.vscode-jupyter-cell-tags --force
+else
+    echo ""
+    echo "VS Code CLI not found, skipping extension install"
+fi
 
 echo ""
 echo "=== Setup Complete ==="

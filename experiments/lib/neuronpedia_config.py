@@ -48,23 +48,24 @@ NEURONPEDIA_MAPPINGS = {
     # ========================================================================
     # Gemma 3 - Gemma Scope 2
     # ========================================================================
-    # SAE Lens: gemma-scope-2-*
-    # Neuronpedia: gemma-3-{size}-{it/pt}
-    # Multiple widths: 16k, 262k
-    # Multiple sparsity levels: small, medium, big
+    # HuggingFace: google/gemma-scope-2-{size}-it
+    #   resid_post/     -> select layers, widths 16k/65k/262k/1m, l0 small/medium/big
+    #   resid_post_all/ -> all layers 0-20 (12B), widths 16k/262k, l0 small/big
+    # SAE Lens release: "gemma-scope-2-{size}-it-res", sae_id: "layer_{L}_width_{W}_l0_{sparsity}"
+    # Neuronpedia: model "gemma-3-{size}-it", SAE ID "{L}-gemmascope-2-res-{W}"
     # ========================================================================
     "gemma_scope_2_12b_it_res": {
         "neuronpedia_model": "gemma-3-12b-it",
-        "sae_id_template": lambda layer, width="16k", l0="medium": f"layer_{layer}_width_{width}_l0_{l0}",
-        "description": "Gemma 3 12B IT - Residual stream",
+        "sae_id_template": lambda layer, width="16k": f"{layer}-gemmascope-2-res-{width}",
+        "description": "Gemma 3 12B IT - Residual stream (resid_post select layers)",
         "layers": [12, 24, 31, 41],
-        "widths": ["16k", "262k"],
+        "widths": ["16k", "65k", "262k", "1m"],
         "l0_levels": ["small", "medium", "big"],
     },
     "gemma_scope_2_27b_it_res": {
         "neuronpedia_model": "gemma-3-27b-it",
-        "sae_id_template": lambda layer, width="16k", l0="medium": f"layer_{layer}_width_{width}_l0_{l0}",
-        "description": "Gemma 3 27B IT - Residual stream",
+        "sae_id_template": lambda layer, width="16k": f"{layer}-gemmascope-2-res-{width}",
+        "description": "Gemma 3 27B IT - Residual stream (resid_post select layers)",
         "layers": [16, 31, 40, 53],
         "widths": ["16k", "262k"],
         "l0_levels": ["small", "medium", "big"],
@@ -238,13 +239,15 @@ OUR_MODELS = {
     },
     "google/gemma-3-12b-it": {
         "sae_release": "gemma_scope_2_12b_it_res",
+        "sae_lens_release": "gemma-scope-2-12b-it-res",
         "default_layer": 24,  # Middle layer
-        "sae_id_template": "google/gemma-scope-2-12b-it/layer_{layer}_width_16k_l0_medium",
+        "sae_id_template": "layer_{layer}_width_16k_l0_medium",
     },
     "google/gemma-3-27b-it": {
         "sae_release": "gemma_scope_2_27b_it_res",
+        "sae_lens_release": "gemma-scope-2-27b-it-res",
         "default_layer": 31,  # Middle layer
-        "sae_id_template": "google/gemma-scope-2-27b-it/layer_{layer}_width_16k_l0_medium",
+        "sae_id_template": "layer_{layer}_width_16k_l0_medium",
     },
 }
 
