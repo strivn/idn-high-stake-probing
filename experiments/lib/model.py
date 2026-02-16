@@ -112,14 +112,15 @@ def load_model(
         model_kwargs = {
             "quantization_config": quantization_config,
             "device_map":          "auto",
+            "torch_dtype":         torch.bfloat16,  # Gemma 3 overflows in fp16 default (transformers#39972)
         }
         quant_label = "8-bit"
     elif device == "cuda":
         model_kwargs = {
-            "torch_dtype": torch.float16,
+            "torch_dtype": torch.bfloat16,
             "device_map":  "auto",
         }
-        quant_label = "fp16"
+        quant_label = "bf16"
     else:
         model_kwargs = {
             "torch_dtype": torch.float32,
