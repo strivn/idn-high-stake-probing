@@ -277,6 +277,132 @@ By the end of this notebook, we should answer:
 
 ---
 
+## Failure Analysis Methodology: How and Why Each Technique Works
+
+This section documents the analysis techniques used in notebook 06 and the intuition behind each one.
+
+### The Overall Strategy
+
+We have a trained probe (logistic regression on mean-pooled activations from layer 12) that makes errors on real-world data (Anthropic HH and ToolACE). The question is: **why does the probe fail on specific examples?**
+
+The approach works in layers of increasing specificity:
+
+1. **Raw activation analysis** (no SAE) — are errors distinguishable in activation space?
+2. **SAE decomposition** — what interpretable features are active in error cases?
+3. **Differential analysis** — which features are specifically associated with errors vs just commonly active?
+4. **Signal word analysis** — do specific tokens trigger misclassification?
+5. **Manual inspection** — read actual error examples with SAE annotations
+
+### Technique 1: PCA on Activations (Part 3)
+
+**What:** Project 4096-dimensional activations to 2D using Principal Component Analysis, coloring errors vs correct predictions.
+
+**Intuition:** If errors form a distinct cluster in PC space, the probe's failure has a geometric cause — errors occupy a region where the linear decision boundary is wrong. If errors scatter uniformly among correct predictions, the failure is more subtle (sub-dimensional, or contextual).
+
+**What we're looking for:**
+
+- Errors clustered in one region → the probe's hyperplane misses an entire subspace
+- Errors along the decision boundary → marginal cases the probe is uncertain about
+- Errors randomly scattered → failure is example-specific, not geometric
+
+**Limitation:** PCA captures only the top 2 variance directions. If the "error direction" is orthogonal to these, it won't show up.
+
+### Technique 2: UMAP on Activations (Part 3)
+
+**What:** Non-linear dimensionality reduction that preserves local neighborhood structure.
+
+**Intuition:** While PCA captures global linear structure, UMAP reveals non-linear clusters. If high-stakes and low-stakes examples form distinct UMAP clusters, but errors sit at cluster boundaries or in mixed regions, we can see that the failure mode is "the model's representation genuinely puts these examples in an ambiguous region."
+
+**Three views per dataset:**
+
+1. Ground truth (high vs low stakes) — does the model separate them at all?
+2. Correct vs errors — where do errors live in the manifold?
+3. FP vs FN — do different error types occupy different regions?
+
+### Technique 3: Cosine Similarity Distribution (Part 3)
+
+**What:** Measure cosine similarity of each example's activation to the centroid of correct predictions. Compare distributions for correct vs error cases.
+
+**Intuition:** If error activations are "further" from the correct centroid (lower cosine similarity), this suggests errors are outliers in activation space — they look different from the typical example. If the distributions overlap heavily, errors are "hiding" among correct predictions in a way the probe can't distinguish.
+
+**Why cosine, not Euclidean?** In high-dimensional spaces, cosine similarity is more meaningful — it measures directional similarity regardless of magnitude. Two activations can have very different L2 norms but represent similar concepts.
+
+### Technique 4: Per-Token SAE Encoding (Part 4)
+
+**What:** Run the model's forward pass, hook into `input_layernorm` at layer 12, encode each token's activation through the SAE, then max-pool across the sequence to get a single feature vector per example.
+
+**Why per-token, not mean-pooled?** SAEs are trained on individual token activations. If you mean-pool the 4096-dim activations first and then encode through the SAE, the mean vector no longer looks like a real token activation — it's an average that the SAE was never trained to decompose. The result is poor sparsity (L0 ~ 2 instead of ~50) and uninterpretable features.
+
+**Why max-pool across sequence?** After encoding each token, we need to aggregate across the sequence. Max-pooling keeps the strongest activation of each feature across all tokens — if any token strongly activates a "danger" feature, that signal is preserved. Mean-pooling would dilute it (exactly the context mixing problem the paper describes).
+
+**Sparsity:** With per-token encoding + max-pool, we get L0 ~ 50 active features per example (out of 32K total). This is sparse enough to be interpretable but dense enough to capture the relevant concepts.
+
+### Technique 5: Top-k Feature Frequency (Part 5)
+
+**What:** For each error case, take the top-10 most active SAE features. Count how often each feature appears across all errors.
+
+**Intuition:** If a specific SAE feature appears in 80% of false negatives, that feature represents a concept that "masks" high-stakes content — the probe sees this feature and incorrectly predicts low-stakes.
+
+**The confounding problem:** Some features (like feature 604 "communication" or 17722 "emotional reactions") appear in nearly every example regardless of correctness. They're universally active because they represent generic concepts present in all conversations. Naive frequency analysis ranks these highest, but they tell us nothing about why errors happen. This is what "confounding" means — the feature correlates with errors only because it correlates with everything.
+
+### Technique 6: Differential Feature Analysis (Part 5.1)
+
+**What:** Compare feature prevalence in errors vs correct predictions. Compute `differential = error_rate - correct_rate`.
+
+**Intuition:** This controls for the confounding problem. A feature that appears in 95% of errors AND 95% of correct predictions has a differential near 0 — it's not diagnostic. A feature that appears in 40% of errors but only 5% of correct predictions has a differential of +35% — it's genuinely enriched in errors and likely causally related to why the probe fails.
+
+**Three categories:**
+
+- **Enriched (positive differential):** Features more common in errors. These represent concepts that confuse the probe.
+- **Depleted (negative differential):** Features less common in errors. These represent concepts that help the probe — when present, the probe gets it right.
+- **Confounded (near-zero differential):** Universally active features. High frequency but not diagnostic.
+
+**Why split FP vs FN?** False positives and false negatives fail for opposite reasons. FP: something makes low-stakes look high-stakes. FN: something makes high-stakes look low-stakes. The enriched features will be completely different for each error type.
+
+### Technique 7: Signal Word Analysis (Part 7)
+
+**What:** Search for specific "trigger words" (emergency, danger, kill, hack, etc.) in false positive examples.
+
+**Intuition:** The paper showed that words like "emergency" can cause false positives even when the context is benign (e.g., "I used the emergency exit for my food delivery"). This is a token-level failure: the probe (or rather, the model's representation) over-weights certain signal words.
+
+**Connection to SAE:** If signal words correlate with specific SAE features, we can explain the mechanism: word "emergency" → activates SAE feature X (danger/urgency) → probe reads high activation → predicts high-stakes. The fix would be to make the probe robust to feature X when other context signals are benign.
+
+### Technique 8: Annotated Examples (Part 8)
+
+**What:** Random-sample errors, print the user text alongside the top-10 SAE features with Neuronpedia explanations.
+
+**Intuition:** Ultimately, interpretability requires reading the actual examples. The automated analysis identifies patterns (which features, which words), but reading the examples reveals whether those patterns make intuitive sense.
+
+**What we learn:** Reading multi-turn Anthropic examples reveals that the first user message often looks innocent, but later turns escalate. The probe, which mean-pools over the entire sequence, gets a diluted signal. This matches the paper's "context mixing" failure mode and is invisible in aggregate statistics.
+
+### How These Techniques Connect
+
+The analysis flows from coarse to fine:
+
+```text
+Raw activations (PCA/UMAP/cosine)
+  → "Are errors geometrically distinct?"
+
+SAE decomposition (per-token, max-pool)
+  → "What interpretable features are active?"
+
+Frequency analysis (naive top-k)
+  → "Which features are common in errors?"
+  → Problem: confounded by universally active features
+
+Differential analysis (error vs correct)
+  → "Which features are SPECIFICALLY associated with errors?"
+  → Fixes the confounding problem
+
+Signal word analysis + manual inspection
+  → "What specific tokens/contexts cause errors?"
+  → Ground truth understanding
+```
+
+Each layer builds on the previous. You wouldn't skip to differential analysis without first understanding the raw activation geometry. And you wouldn't trust the automated analysis without reading actual examples.
+
+---
+
 ## All References
 
 - [Llama Scope Paper](https://arxiv.org/abs/2410.20526) (Liao et al., 2024)

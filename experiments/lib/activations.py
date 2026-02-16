@@ -27,6 +27,57 @@ from .data import Example
 from .model import get_config_attr, get_model_layers, set_model_layers
 
 
+# ---------------------------------------------------------------------------
+# Gemma-specific message normalization
+# ---------------------------------------------------------------------------
+
+TOOL_RESPONSE_PREFIX = "Sure, here's the result of the tool call: "
+
+
+def _needs_message_normalization(tokenizer: AutoTokenizer) -> bool:
+    """Check if tokenizer requires strict user/assistant alternation.
+
+    Gemma 3 rejects tool roles and consecutive same-role messages.
+    Llama 3.x handles these natively, so we skip normalization for it.
+    """
+    name = getattr(tokenizer, "name_or_path", "").lower()
+    return "gemma" in name
+
+
+def _normalize_messages(messages: List[dict]) -> List[dict]:
+    """Normalize chat messages for models with strict role requirements.
+
+    Applied only for Gemma-family models. Two transformations:
+    1. Convert 'tool' role -> 'user' with a prefix (matching the original paper's
+       approach in toolace_dataset.py: tool responses are external input).
+    2. Merge consecutive same-role messages (join content with double newline).
+       Handles the 5 Anthropic examples with consecutive 'assistant' messages.
+    """
+    # Step 1: convert tool -> user
+    converted = []
+    for msg in messages:
+        if msg["role"] == "tool":
+            converted.append({
+                "role":    "user",
+                "content": TOOL_RESPONSE_PREFIX + msg.get("content", ""),
+            })
+        else:
+            converted.append(msg)
+
+    # Step 2: merge consecutive same-role messages
+    if not converted:
+        return converted
+
+    merged = [converted[0].copy()]
+    for msg in converted[1:]:
+        if msg["role"] == merged[-1]["role"]:
+            merged[-1]["content"] += "\n\n" + msg.get("content", "")
+        else:
+            merged.append(msg.copy())
+
+    return merged
+
+
 def mean_pool(activations: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     """Mean pool activations over sequence length, respecting padding.
 
@@ -53,18 +104,25 @@ def _format_and_measure_lengths(
 ) -> Tuple[List[str], List[int]]:
     """Apply chat template and measure approximate token lengths.
 
+    For Gemma models, normalizes messages first (tool->user, merge consecutive
+    same-role). Llama and other models pass messages through unchanged.
+
     Returns:
         formatted_texts: list of formatted strings
         lengths: list of token counts (from fast tokenizer, no padding)
     """
-    formatted_texts = [
-        tokenizer.apply_chat_template(
-            ex.messages,
-            tokenize=False,
-            add_generation_prompt=False,
+    normalize = _needs_message_normalization(tokenizer)
+
+    formatted_texts = []
+    for ex in examples:
+        msgs = _normalize_messages(ex.messages) if normalize else ex.messages
+        formatted_texts.append(
+            tokenizer.apply_chat_template(
+                msgs,
+                tokenize=False,
+                add_generation_prompt=False,
+            )
         )
-        for ex in examples
-    ]
 
     # tokenize without padding to get true lengths
     encoded = tokenizer(formatted_texts, padding=False, truncation=False)
