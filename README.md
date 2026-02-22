@@ -1,29 +1,12 @@
-# Bluedot AI Safety Project
+# High-Stakes Activation Probes on Indonesian
 
-Research and implementation for the Bluedot Technical AI Safety Project course.
+Research project completed as part of the [Bluedot Technical AI Safety](https://bluedot.org/) cohort.
 
-## Focus Areas
+ [Detecting High-Stakes Interactions with Activation Probes](https://arxiv.org/abs/2506.10805) (NeurIPS 2025) with cross-lingual evaluation (Indonesian) and SAE-based failure analysis, on Llama 3.1 8B and Gemma 3 12B.
 
-This project explores practical applications of interpretability for AI safety, with particular emphasis on:
-- Constitutional classifiers and linear probes
-- Activation-based monitoring and control
-- Evaluating risks in agentic AI systems
+## Repository
 
-## Current Status
-
-🔬 **Phase:** Research & Ideation
-
-See [CLAUDE.md](./CLAUDE.md) for detailed project context and planning.
-
-## Repository Structure
-
-- `research/` - Literature review, paper summaries, and ideation
-- `experiments/` - Implementation, notebooks, and experimental results
-- `docs/` - Project documentation and progress updates
-- `data/` - Datasets and model artifacts (not tracked in git)
-
-## Timeline
-
-5-week sprint (30 hours total) as part of Bluedot Technical AI Safety Project course.
-
-**Goal:** Deliver a practical contribution to AI safety with a publishable write-up.
+- `experiments/notebooks/` — Jupyter notebooks for activation extraction, probe training, layer sweep, cross-lingual eval, and SAE failure analysis
+- `experiments/lib/` — shared utilities for model loading, activation extraction, probing, and evaluation
+- `writing/latex/` — technical report (PDF + source)
+- `data/` — datasets (gitignored)

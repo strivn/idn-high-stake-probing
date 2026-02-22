@@ -58,9 +58,21 @@ Thumbs.db
 # Docs and personal notes
 docs/
 mentor_advice.md
+writing/feedback
 
 # Claude
 .claude
 research/archived/
 research/repositories/
 for_you_memo.md
+
+# LaTeX build artifacts
+writing/latex/*.aux
+writing/latex/*.bbl
+writing/latex/*.blg
+writing/latex/*.log
+writing/latex/*.out
+writing/latex/*.toc
+writing/latex/*.fls
+writing/latex/*.fdb_latexmk
+writing/latex/*.synctex.gz
