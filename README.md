@@ -10,3 +10,7 @@ Research project completed as part of the [Bluedot Technical AI Safety](https://
 - `experiments/lib/` — shared utilities for model loading, activation extraction, probing, and evaluation
 - `writing/latex/` — technical report (PDF + source)
 - `data/` — datasets (gitignored)
+
+## Report
+
+Refer to the [technical report](writing/latex/technical_report_v3.pdf) for full methodology and results.
