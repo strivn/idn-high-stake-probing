@@ -2,6 +2,8 @@
 
 Research project completed as part of the [Bluedot Technical AI Safety](https://bluedot.org/) cohort.
 
+Published also on [BlueDot's blog](https://blog.bluedot.org/p/high-stakes-activation-probes-on) as one of the outstanding submission.
+
 Explored the mechanisms in [Detecting High-Stakes Interactions with Activation Probes](https://arxiv.org/abs/2506.10805) (NeurIPS 2025) with cross-lingual evaluation (Indonesian) and SAE-based failure analysis, on Llama 3.1 8B and Gemma 3 12B.
 
 Main Findings:
